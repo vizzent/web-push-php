@@ -44,23 +44,42 @@ final class Encryption
         $userPublicKey = Base64Url::decode($userPublicKey);
         $userAuthToken = Base64Url::decode($userAuthToken);
 
-        // initialize utilities
-        $math = EccFactory::getAdapter();
-        $pointSerializer = new UncompressedPointSerializer($math);
-        $generator = EccFactory::getNistCurves()->generator256();
-        $curve = EccFactory::getNistCurves()->curve256();
+        if (!$nativeEncryption) {
+            // initialize utilities
+            $math = EccFactory::getAdapter();
+            $pointSerializer = new UncompressedPointSerializer($math);
+            $generator = EccFactory::getNistCurves()->generator256();
+            $curve = EccFactory::getNistCurves()->curve256();
 
-        // get local key pair
-        $localPrivateKeyObject = $generator->createPrivateKey();
-        $localPublicKeyObject = $localPrivateKeyObject->getPublicKey();
-        $localPublicKey = hex2bin($pointSerializer->serialize($localPublicKeyObject->getPoint()));
+            // get local key pair
+            $localPrivateKeyObject = $generator->createPrivateKey();
+            $localPublicKeyObject = $localPrivateKeyObject->getPublicKey();
+            $localPublicKey = hex2bin($pointSerializer->serialize($localPublicKeyObject->getPoint()));
 
-        // get user public key object
-        $pointUserPublicKey = $pointSerializer->unserialize($curve, bin2hex($userPublicKey));
-        $userPublicKeyObject = $generator->getPublicKeyFrom($pointUserPublicKey->getX(), $pointUserPublicKey->getY(), $generator->getOrder());
+            // get user public key object
+            $pointUserPublicKey = $pointSerializer->unserialize($curve, bin2hex($userPublicKey));
+            $userPublicKeyObject = $generator->getPublicKeyFrom(
+                $pointUserPublicKey->getX(),
+                $pointUserPublicKey->getY(),
+                $generator->getOrder()
+            );
 
-        // get shared secret from user public key and local private key
-        $sharedSecret = hex2bin($math->decHex((string) $userPublicKeyObject->getPoint()->mul($localPrivateKeyObject->getSecret())->getX()));
+            // get shared secret from user public key and local private key
+            $sharedSecret = hex2bin(
+                $math->decHex(
+                    (string)$userPublicKeyObject->getPoint()->mul($localPrivateKeyObject->getSecret())->getX()
+                )
+            );
+        } else {
+            $localPrivateKeyObject = openssl_pkey_new(array(
+                'digest_alt' => 'sha256',
+                'private_key_bits' => 128,
+                'private_key_type' => OPENSSL_KEYTYPE_EC,
+            ));
+
+            $details = openssl_pkey_get_details($localPrivateKeyObject);
+            $localPublicKey = $details['key'];
+        }
 
         // generate salt
         $salt = openssl_random_pseudo_bytes(16);
@@ -84,7 +103,7 @@ final class Encryption
         // encrypt
         // "The additional data passed to each invocation of AEAD_AES_128_GCM is a zero-length octet sequence."
         if (!$nativeEncryption) {
-            list($encryptedText, $tag) = \AESGCM\AESGCM::encrypt($contentEncryptionKey, $nonce, $payload, "");
+            //list($encryptedText, $tag) = \AESGCM\AESGCM::encrypt($contentEncryptionKey, $nonce, $payload, "");
         } else {
             $encryptedText = openssl_encrypt($payload, 'aes-128-gcm', $contentEncryptionKey, OPENSSL_RAW_DATA, $nonce, $tag); // base 64 encoded
         }
