@@ -71,14 +71,28 @@ final class Encryption
                 )
             );
         } else {
-            $localPrivateKeyObject = openssl_pkey_new(array(
-                'digest_alt' => 'sha256',
-                'private_key_bits' => 128,
+            $keys = openssl_pkey_new(array(
                 'private_key_type' => OPENSSL_KEYTYPE_EC,
+                'curve_name' => 'prime256v1',
             ));
 
-            $details = openssl_pkey_get_details($localPrivateKeyObject);
-            $localPublicKey = $details['key'];
+            // Get private key
+            openssl_pkey_export($keys, $localPrivateKeyObject);
+
+            // Get public key
+            $localPublicKey = openssl_pkey_get_details($keys);
+            var_dump($localPublicKey["ec"]);
+            var_dump(strlen($localPublicKey["ec"]["x"]));
+            var_dump(strlen($localPublicKey["ec"]["y"]));
+            var_dump(strlen($localPublicKey["ec"]["d"]));
+            $localPublicKey = $localPublicKey["key"];
+            var_dump($localPublicKey);
+            $localPublicKey = str_replace("-----BEGIN PUBLIC KEY-----", "", $localPublicKey);
+            $localPublicKey = str_replace("-----END PUBLIC KEY-----", "", $localPublicKey);
+            $localPublicKey = base64_decode(trim(preg_replace('/\s+/', '', $localPublicKey)));
+            var_dump($localPublicKey);
+
+            $sharedSecret = openssl_dh_compute_key($userPublicKey, $keys);
         }
 
         // generate salt
