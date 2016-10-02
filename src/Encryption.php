@@ -81,18 +81,13 @@ final class Encryption
 
             // Get public key
             $localPublicKey = openssl_pkey_get_details($keys);
-            var_dump($localPublicKey["ec"]);
-            var_dump(strlen($localPublicKey["ec"]["x"]));
-            var_dump(strlen($localPublicKey["ec"]["y"]));
-            var_dump(strlen($localPublicKey["ec"]["d"]));
-            $localPublicKey = $localPublicKey["key"];
-            var_dump($localPublicKey);
-            $localPublicKey = str_replace("-----BEGIN PUBLIC KEY-----", "", $localPublicKey);
-            $localPublicKey = str_replace("-----END PUBLIC KEY-----", "", $localPublicKey);
-            $localPublicKey = base64_decode(trim(preg_replace('/\s+/', '', $localPublicKey)));
-            var_dump($localPublicKey);
+            $localPublicKey = hex2bin("04").$localPublicKey["ec"]["x"].$localPublicKey["ec"]["y"];
 
-            $sharedSecret = openssl_dh_compute_key($userPublicKey, $keys);
+            $sharedSecret = openssl_dh_compute_key($userPublicKey, $keys); // openssl_ec_compute_key ?
+
+            if (!$sharedSecret) {
+                throw new \ErrorException("Computing shared secret failed.");
+            }
         }
 
         // generate salt
