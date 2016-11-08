@@ -74,6 +74,10 @@ final class Encryption
                 'curve_name' => 'prime256v1',
             ));
 
+            if (!$keys) {
+                throw new \ErrorException('OpenSSL error: '.openssl_error_string());
+            }
+
             // Get private key
             openssl_pkey_export($keys, $localPrivateKeyObject);
 
