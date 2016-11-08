@@ -24,16 +24,11 @@ class WebPush
     /** @var Browser */
     protected $browser;
 
-    /** @var array Key is push server type and value is the API key */
-    protected $apiKeys;
+    /** @var array */
+    protected $auth;
 
-    /** @var array Array of array of Notifications by server type */
-    private $notificationsByServerType;
-
-    /** @var array Array of not standard endpoint sources */
-    private $urlByServerType = array(
-        'GCM' => self::GCM_URL,
-    );
+    /** @var array Array of array of Notifications */
+    private $notifications;
 
     /** @var array Default options : TTL, urgency, topic */
     private $defaultOptions;
@@ -41,55 +36,60 @@ class WebPush
     /** @var bool Automatic padding of payloads, if disabled, trade security for bandwidth */
     private $automaticPadding = true;
 
-    /** @var boolean */
+    /** @var bool */
     private $nativePayloadEncryptionSupport;
 
     /**
      * WebPush constructor.
      *
-     * @param array $apiKeys Some servers needs authentication. Provide your API keys here. (eg. array('GCM' => 'GCM_API_KEY'))
-     * @param array $defaultOptions TTL, urgency, topic
-     * @param int|null $timeout Timeout of POST request
+     * @param array               $auth           Some servers needs authentication
+     * @param array               $defaultOptions TTL, urgency, topic
+     * @param int|null            $timeout        Timeout of POST request
      * @param AbstractClient|null $client
      */
-    public function __construct(array $apiKeys = array(), $defaultOptions = array(), $timeout = 30, AbstractClient $client = null)
+    public function __construct(array $auth = array(), $defaultOptions = array(), $timeout = 30, AbstractClient $client = null)
     {
-        $this->apiKeys = $apiKeys;
+        if (array_key_exists('VAPID', $auth)) {
+            $auth['VAPID'] = VAPID::validate($auth['VAPID']);
+        }
+
+        $this->auth = $auth;
+
         $this->setDefaultOptions($defaultOptions);
 
         $client = isset($client) ? $client : new MultiCurl();
         $client->setTimeout($timeout);
         $this->browser = new Browser($client);
-        
+
         $this->nativePayloadEncryptionSupport = version_compare(phpversion(), '7.1', '>=');
     }
 
     /**
      * Send a notification.
      *
-     * @param string $endpoint
-     * @param string|null $payload If you want to send an array, json_encode it.
+     * @param string      $endpoint
+     * @param string|null $payload       If you want to send an array, json_encode it
      * @param string|null $userPublicKey
      * @param string|null $userAuthToken
-     * @param bool $flush If you want to flush directly (usually when you send only one notification)
-     * @param array $options Array with several options tied to this notification. If not set, will use the default options that you can set in the WebPush object.
+     * @param bool        $flush         If you want to flush directly (usually when you send only one notification)
+     * @param array       $options       Array with several options tied to this notification. If not set, will use the default options that you can set in the WebPush object
+     *
      * @return array|bool Return an array of information if $flush is set to true and the queued requests has failed.
-     *                    Else return true.
+     *                    Else return true
+     *
      * @throws \ErrorException
      */
     public function sendNotification($endpoint, $payload = null, $userPublicKey = null, $userAuthToken = null, $flush = false, $options = array())
     {
-        if(isset($payload)) {
-            if (strlen($payload) > Encryption::MAX_PAYLOAD_LENGTH) {
+        if (isset($payload)) {
+            if (Utils::safeStrlen($payload) > Encryption::MAX_PAYLOAD_LENGTH) {
                 throw new \ErrorException('Size of payload must not be greater than '.Encryption::MAX_PAYLOAD_LENGTH.' octets.');
             }
 
             $payload = Encryption::padPayload($payload, $this->automaticPadding);
         }
 
-        // sort notification by server type
-        $type = $this->sortEndpoint($endpoint);
-        $this->notificationsByServerType[$type][] = new Notification($endpoint, $payload, $userPublicKey, $userAuthToken, $options);
+        $this->notifications[] = new Notification($endpoint, $payload, $userPublicKey, $userAuthToken, $options);
 
         if ($flush) {
             $res = $this->flush();
@@ -115,28 +115,18 @@ class WebPush
      *
      * @return array|bool If there are no errors, return true.
      *                    If there were no notifications in the queue, return false.
-     *                    Else return an array of information for each notification sent (success, statusCode, headers, content).
+     *                    Else return an array of information for each notification sent (success, statusCode, headers, content)
      *
      * @throws \ErrorException
      */
     public function flush()
     {
-        if (empty($this->notificationsByServerType)) {
+        if (empty($this->notifications)) {
             return false;
         }
 
-        // if GCM is present, we should check for the API key
-        if (array_key_exists('GCM', $this->notificationsByServerType)) {
-            if (empty($this->apiKeys['GCM'])) {
-                throw new \ErrorException('No GCM API Key specified.');
-            }
-        }
-
         // for each endpoint server type
-        $responses = array();
-        foreach ($this->notificationsByServerType as $serverType => $notifications) {
-            $responses = array_merge($responses, $this->prepareAndSend($notifications, $serverType));
-        }
+        $responses = $this->prepareAndSend($this->notifications);
 
         // if multi curl, flush
         if ($this->browser->getClient() instanceof MultiCurl) {
@@ -148,20 +138,22 @@ class WebPush
         /** @var Response|null $response */
         $return = array();
         $completeSuccess = true;
-        foreach ($responses as $response) {
+        foreach ($responses as $i => $response) {
             if (!isset($response)) {
                 $return[] = array(
                     'success' => false,
+                    'endpoint' => $this->notifications[$i]->getEndpoint(),
                 );
 
                 $completeSuccess = false;
             } elseif (!$response->isSuccessful()) {
                 $return[] = array(
                     'success' => false,
+                    'endpoint' => $this->notifications[$i]->getEndpoint(),
                     'statusCode' => $response->getStatusCode(),
                     'headers' => $response->getHeaders(),
                     'content' => $response->getContent(),
-                    'expired' => in_array($response->getStatusCode(), array(404, 410)),
+                    'expired' => in_array($response->getStatusCode(), array(400, 404, 410)),
                 );
 
                 $completeSuccess = false;
@@ -173,12 +165,12 @@ class WebPush
         }
 
         // reset queue
-        $this->notificationsByServerType = null;
+        $this->notifications = null;
 
         return $completeSuccess ? true : $return;
     }
 
-    private function prepareAndSend(array $notifications, $serverType)
+    private function prepareAndSend(array $notifications)
     {
         $responses = array();
         /** @var Notification $notification */
@@ -193,11 +185,11 @@ class WebPush
                 $encrypted = Encryption::encrypt($payload, $userPublicKey, $userAuthToken, $this->nativePayloadEncryptionSupport);
 
                 $headers = array(
-                    'Content-Length' => strlen($encrypted['cipherText']),
+                    'Content-Length' => Utils::safeStrlen($encrypted['cipherText']),
                     'Content-Type' => 'application/octet-stream',
                     'Content-Encoding' => 'aesgcm',
-                    'Encryption' => 'keyid="p256dh";salt="'.$encrypted['salt'].'"',
-                    'Crypto-Key' => 'keyid="p256dh";dh="'.$encrypted['localPublicKey'].'"',
+                    'Encryption' => 'salt='.$encrypted['salt'],
+                    'Crypto-Key' => 'dh='.$encrypted['localPublicKey'],
                 );
 
                 $content = $encrypted['cipherText'];
@@ -219,8 +211,34 @@ class WebPush
                 $headers['Topic'] = $options['topic'];
             }
 
-            if ($serverType === 'GCM') {
-                $headers['Authorization'] = 'key='.$this->apiKeys['GCM'];
+            // if GCM
+            if (substr($endpoint, 0, strlen(self::GCM_URL)) === self::GCM_URL) {
+                if (array_key_exists('GCM', $this->auth)) {
+                    $headers['Authorization'] = 'key='.$this->auth['GCM'];
+                } else {
+                    throw new \ErrorException('No GCM API Key specified.');
+                }
+            }
+            // if VAPID (GCM doesn't support it but FCM does)
+            elseif (array_key_exists('VAPID', $this->auth)) {
+                $vapid = $this->auth['VAPID'];
+
+                $audience = parse_url($endpoint, PHP_URL_SCHEME).'://'.parse_url($endpoint, PHP_URL_HOST);
+
+                if (!parse_url($audience)) {
+                    throw new \ErrorException('Audience "'.$audience.'"" could not be generated.');
+                }
+
+                $vapidHeaders = VAPID::getVapidHeaders($audience, $vapid['subject'], $vapid['publicKey'], $vapid['privateKey']);
+
+                $headers['Authorization'] = $vapidHeaders['Authorization'];
+
+                if (array_key_exists('Crypto-Key', $headers)) {
+                    // FUTURE replace ';' with ','
+                    $headers['Crypto-Key'] .= ';'.$vapidHeaders['Crypto-Key'];
+                } else {
+                    $headers['Crypto-Key'] = $vapidHeaders['Crypto-Key'];
+                }
             }
 
             $responses[] = $this->sendRequest($endpoint, $headers, $content);
@@ -248,22 +266,6 @@ class WebPush
     }
 
     /**
-     * @param string $endpoint
-     *
-     * @return string
-     */
-    private function sortEndpoint($endpoint)
-    {
-        foreach ($this->urlByServerType as $type => $url) {
-            if (substr($endpoint, 0, strlen($url)) === $url) {
-                return $type;
-            }
-        }
-
-        return 'standard';
-    }
-
-    /**
      * @return Browser
      */
     public function getBrowser()
@@ -284,7 +286,7 @@ class WebPush
     }
 
     /**
-     * @return boolean
+     * @return bool
      */
     public function isAutomaticPadding()
     {
@@ -292,7 +294,7 @@ class WebPush
     }
 
     /**
-     * @param boolean $automaticPadding
+     * @param bool $automaticPadding
      *
      * @return WebPush
      */
