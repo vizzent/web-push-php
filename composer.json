@@ -7,6 +7,10 @@
   "license": "MIT",
   "authors": [
     {
+        "type": "vcs",
+        "url": "https://github.com/vizzent/phpecc"
+    },
+    {
       "name": "Louis Lagrange",
       "email": "lagrange.louis@gmail.com",
       "homepage": "https://github.com/Minishlink"
