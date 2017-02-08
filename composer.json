@@ -4,7 +4,7 @@
   "description": "Web Push library for PHP",
   "license": "MIT",
   "require": {
-    "php": ">=5.5",
+    "php": ">=5.5"
   },
   "autoload": {
     "psr-4" : {
